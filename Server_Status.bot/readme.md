@@ -5,3 +5,5 @@ Enable in webapi in LSTY_Data\appsettings.json
 
 Enable Chat log in Mods\ServerTools_Config\ServerToolsConfig.xml
     ```<Tool Name="Chat_Logger" Enable="True" />```
+
+additional doc https://docs.7dtd.top/api-187267722
