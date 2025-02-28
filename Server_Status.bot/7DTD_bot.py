@@ -58,7 +58,7 @@ async def write_cfg(section, key, value):
     with open('config.ini', 'w', encoding='utf-8') as configfile:
         config.write(configfile)
 def update_settings():
-    global token, channel_id, crosschat_id, message_id, update_time, bot_name, bot_ava, address, command_prefex, username, password, log_directory, webhook_url
+    global token, channel_id, crosschat_id, message_id, update_time, bot_name, bot_ava, address, command_prefex, username, password, log_directory, webhook_url, add_string, players_message_id
 
     config = read_cfg()
     if config:
@@ -67,6 +67,7 @@ def update_settings():
             channel_id = config['botconfig'].get('channel_id', None)
             crosschat_id = config['botconfig'].get('crosschat_id', None)
             message_id = config['botconfig'].get('message_id', None)
+            players_message_id = config['botconfig'].get('players_message_id', None)
             bot_name = config['botconfig'].get('bot_name', None)
             bot_ava = config['botconfig'].get('bot_ava', None)
             username = config['botconfig'].get('username', None)
@@ -76,6 +77,7 @@ def update_settings():
             address = (config['botconfig'].get('ip', None), int(config['botconfig'].get('query_port', 0)), int(config['botconfig'].get('restapi_port', 0)))
             log_directory = config['botconfig'].get('log_dir', None)
             webhook_url = config['botconfig'].get('webhook_url', None)
+            add_string = config['botconfig'].get('add_string', "")
 
         except ValueError as e:
             print(f"Error: wrong value in config file {e}")
@@ -86,6 +88,7 @@ token = None
 channel_id = None
 crosschat_id = None
 message_id = None
+players_message_id = None
 bot_name = None
 bot_ava = None
 username = None
@@ -100,6 +103,7 @@ conn = None
 access_token = None
 refresh_token = None
 file_position = 0
+add_string = ""
 
 useonce = None
 update_settings()
@@ -181,32 +185,40 @@ async def send_from_buffer_to_discord(nick, message):
 
 async def auth(address):
     global conn, access_token, refresh_token
-    conn = http.client.HTTPConnection(address[0], address[2])
+    try:
+        conn = http.client.HTTPConnection(address[0], address[2])
+    except Exception as e:
+        print(f"Ошибка подключения: {e}")
     payload = f'grant_type=password&username={username}&password={password}'
-    #headers = {'Content-Type': 'application/x-www-form-urlencoded'}  # Исправлено на application/x-www-form-urlencoded
+    #headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     headers = {'Content-Type': 'application/json'}
-    conn.request("POST", "/api/oauth/token", payload, headers)
-    res = conn.getresponse()
-    data = res.read()
-    response_data = data.decode("utf-8")
-
-    if res.status == 200:
-        #print("Аутентификация прошла успешно.")
-        #print("Ответ:\n", response_data)
-        access_token = json.loads(response_data).get("access_token")
-        refresh_token = json.loads(response_data).get("refresh_token")
-    else:
-        print("Ошибка аутентификации:", res.status, response_data)
+    try:
+        conn.request("POST", "/api/oauth/token", payload, headers)
+        res = conn.getresponse()
+        data = res.read()
+        response_data = data.decode("utf-8")
+        if res.status == 200:
+            access_token = json.loads(response_data).get("access_token")
+            refresh_token = json.loads(response_data).get("refresh_token")
+    except Exception as e:
+        print(f"Ошибка аутентификации: {e}\n", res.status, response_data)
         conn.close()
         conn = None
+        access_token = None
+        refresh_token = None
 
+def normalize_string(string):
+    return unicodedata.normalize('NFKD', string).encode('utf-8', 'ignore').decode("utf-8")
+
+retry_attempted = False
 async def send_annonce(author, message):
-    author = unicodedata.normalize('NFKD', author).encode('utf-8', 'ignore').decode("utf-8")
-    message = unicodedata.normalize('NFKD', message).encode('utf-8', 'ignore').decode("utf-8")
+    global conn, access_token, refresh_token, retry_attempted
+    
+    author = normalize_string(author)
+    message = normalize_string(message)
 
-    global conn, access_token, refresh_token
-    if not conn:
-        await auth(address)
+    await auth(address)
+    
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json'
@@ -216,19 +228,29 @@ async def send_annonce(author, message):
        "senderName": f"{author}"
     })
 
-    conn.request("POST", "/api/Server/SendGlobalMessage", payload, headers)
+    try:
+        conn.request("POST", "/api/Server/SendGlobalMessage", payload, headers)
     
-    res = conn.getresponse()
-    data = res.read()
-    response_data = data.decode("utf-8")
-
-    if res.status == 200:
-        #print(data.decode("utf-8"))
-        pass
-    else:
-        print("Ошибка аутентификации:", res.status, response_data)
-        conn.close()
-        conn = None
+        res = conn.getresponse()
+        if res.status == 200:
+            response_data = res.read().decode("utf-8")
+            # print(response_data)
+            retry_attempted = False
+        else:
+            response_data = res.read().decode("utf-8")
+            print("Ошибка соединения:", res.status, response_data)
+            if not retry_attempted:  
+                retry_attempted = True
+                await send_annonce(author, message)
+                
+    except Exception as e:
+        print(f"Ошибка отправки сообщения: {e}")
+        if conn:
+            conn.close()
+            conn = None
+        access_token = None
+        refresh_token = None
+        retry_attempted = False
 
 async def update_avatar_if_needed(bot, bot_name, bot_ava):
     # Проверяем, совпадает ли ссылка на аватар
@@ -273,7 +295,7 @@ async def watch_logs():
 
 @tasks.loop(seconds=int(update_time))
 async def update_status():
-    global conn, access_token
+    global conn, access_token, refresh_token
     if bot.user.name != bot_name:
         await bot.user.edit(username=bot_name)
 
@@ -287,7 +309,12 @@ async def update_status():
         res = conn.getresponse()
         data = res.read().decode("utf-8")
         if res.status == 200:
-            data_list = json.loads(data)  # Декодируем JSON в список
+            try:
+                data_list = json.loads(data)  # Декодируем JSON в список
+            except Exception as e:
+                activity = disnake.Game(name=f"Offline")
+                await bot.change_presence(status=disnake.Status.online, activity=activity)
+
             if data_list:
 
                 online_players = data_list.get("onlinePlayers", 0)
@@ -305,14 +332,16 @@ async def update_status():
             game_days = data_list["gameTime"].get("days", 0)
             game_hours = data_list["gameTime"].get("hours", 0)
             game_minutes = data_list["gameTime"].get("minutes", 0)
-            
+            add_code_string = eval(f'f"""{add_string}"""')
+
             message = (
-                f":earth_africa:Direct Link:                    **{data_list.get("serverIp", 0)}:{data_list.get("serverPort", 0)}**\n"
+                f":earth_africa:Direct Link:                    **```{data_list.get("serverIp", 0)}:{data_list.get("serverPort", 0)}```**\n"
                 f":map: Map:                                    **{data_list.get("gameWorld", 0)}**\n"
                 f":green_circle: Online:                        **{online_players}/{max_players}**\n"
                 f":film_frames: FPS:                            **{int(data_list.get("fps", 0))}**\n"
                 f":timer: UpTime:                               **{hours}:{minutes}**\n"
                 f":newspaper: Ver:                              **{data_list.get("serverVersion", 0)}**\n"
+                f"{f'{add_code_string}\n' if add_string else ''}"
                 f"============ Server Settings ============\n"
                 f":asterisk: Game Time:                         **{game_days}d:{game_hours}h: {game_minutes}m**\n"
                 f":first_quarter_moon: Blood Moon:              **{data_list.get('isBloodMoon', False)}{' :red_circle:' if data_list.get('isBloodMoon', 0) else ' :full_moon:'}**\n"
@@ -335,11 +364,22 @@ async def update_status():
 
     except Exception as e:
         print(f'Cant connect to server, check ip and query/rest_api port \n ERROR >>: {e}')
-
+        embed = disnake.Embed(
+            title=f"**{address[0]}:{address[2]}**",
+            colour=disnake.Colour.red(),
+            description=f"offline or cannot answer",
+        )
+        await message.edit(content=f'Last update: {datetime.datetime.now().strftime("%H:%M")}', embed=embed)
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}\nBot Shards: {bot.shard_count}')
     print('Invite bot link to discord (open in browser):\nhttps://discord.com/api/oauth2/authorize?client_id='+ str(bot.user.id) +'&permissions=8&scope=bot\n')
+    '''
+    for guild in bot.guilds:
+        # Синхронизация команд на каждой гильдии
+        commands = await bot.fetch_guild_commands(guild.id)
+        print(f'Fetched {len(commands)} commands from guild {guild.name} (ID: {guild.id}).')
+    '''
     try:
         await update_avatar_if_needed(bot, bot_name, bot_ava)
     except Exception as e:
@@ -389,7 +429,6 @@ async def help(ctx):
     )
 '''
 
-#commands
 @bot.slash_command(name=f'{command_prefex}_sendhere', description="Set this channel to status")
 async def sendhere(ctx: disnake.ApplicationCommandInteraction):
     if ctx.author.guild_permissions.administrator:
@@ -425,6 +464,241 @@ async def lookhere(ctx: disnake.ApplicationCommandInteraction):
         except Exception as e:
             await ctx.response.send_message(content='❌ An error occurred. Please try again later.', ephemeral=True)
             print(f'Error occurred during file write: {e}')
+    else:
+        await ctx.response.send_message(content='❌ You do not have permission to run this command.', ephemeral=True)
+
+'''
+@bot.slash_command(name=f'{command_prefex}_status', description="Request Servers status")
+async def status(ctx: disnake.ApplicationCommandInteraction, ip: str = None, query: int = None):
+    if ip is None:
+        ip = address[0]
+    try:
+        if ip is not None and query is not None:
+            info, players, rules = await get_info((f"{ip}", int(query)))
+        else:
+            info, players, rules = await get_info(address)
+        message = (
+            f":earth_africa: Direct Link: **{ip}:{info.port}**\n"
+            f":link: Invite: **{rules.get('SU_s', 'N/A')}**\n"
+            f":map: Map: **{info.map_name}**\n"
+            f":green_circle: Online: **{info.player_count}/{info.max_players}**\n"
+            f":asterisk: Pass: **{info.password_protected}**\n"
+            f":newspaper: Ver: **{rules.get('NO_s', 'N/A')}**\n"
+        )
+        addition_embed = disnake.Embed(
+            title=f"**{info.server_name}**",
+            colour=disnake.Colour.green()
+        )
+        addition_embed.add_field(name="", value=message, inline=False)
+
+        try:
+            await ctx.response.send_message(embed=addition_embed, ephemeral=True)
+        except Exception as e:
+            await ctx.response.send_message(f'❌ Failed to send the status message. \nError:\n{e}', ephemeral=True)
+            print(f'Error occurred during sending message: {e}')
+
+    except Exception as e:
+        await ctx.response.send_message(content='❌ An error occurred. Please try again later.', ephemeral=True)
+        print(f'Error occurred during fetching server info: {e}')
+'''
+
+@bot.slash_command(name=f'{command_prefex}_players', description="Request Players status")
+async def players(ctx: disnake.ApplicationCommandInteraction):
+    global conn, access_token, refresh_token
+    try:
+        await auth(address)
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        conn.request("GET", "/api/OnlinePlayers", headers=headers)
+        res = conn.getresponse()
+        data = res.read().decode("utf-8")
+        if res.status == 200:
+            #print("Список онлайн игроков:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
+            players_data = json.loads(data)
+
+            index = "#"
+            name = "Name"
+            level = "LvL"
+            platformId = "ID"
+            ping = "Ping"
+
+            playerKills = "pKill"
+            zombieKills = "zKill"
+            deaths = "Die"
+            totalTimePlayed = "Play"
+
+            #table_header = f"|{index:<2}|{name:<12}|{level:<3}|{platformId:<18}|{ping:<4}|{playerKills:<4}|{zombieKills:<4}|{deaths:<3}|{totalTimePlayed:<4}|\n"
+            table_header = f"|{index:<2}|{name:<12}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+            table_rows = ""
+
+            for index, player in enumerate(players_data, start=1):
+                name = player["playerName"]
+                level = player["playerDetails"]["level"]
+                platformId = player["platformId"].replace("Steam_", "")
+                ping = player["ping"]
+                playerKills = player["playerDetails"]["playerKills"]
+                zombieKills = player["playerDetails"]["zombieKills"]
+                deaths = player["playerDetails"]["deaths"]
+                
+                totalTimePlayed = player["playerDetails"]["totalTimePlayed"]
+                days = int(totalTimePlayed // (24 * 3600))
+                hours = int((totalTimePlayed % (24 * 3600)) // 3600)
+                minutes = int((totalTimePlayed % 3600) // 60)
+                totalTimePlayed = f"{hours:02}:{minutes:02}"
+
+                table_rows += f"|{index:<2}|{name:<12}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+
+            # Формируем сообщение с таблицей
+            full_table = f"```ps\n{table_header}{table_rows}```"
+
+            # Разделяем сообщение на части по 1500 символов
+            max_length = 1700
+            current_message = "```ps\n" + table_header  # Начинаем с заголовка
+
+            for row in table_rows.splitlines(keepends=True):  # Сохраняем переносы строк
+                if len(current_message) + len(row) > max_length:
+                    # Если добавление строки превышает лимит, отправляем текущее сообщение
+                    current_message += "```"  # Закрываем кодовый блок
+                    await ctx.send(current_message, ephemeral=True)
+                    current_message = "```ps\n" + table_header + row  # Начинаем новый блок с заголовком
+                else:
+                    current_message += row  # Добавляем строку в текущее сообщение
+
+            # Отправляем оставшийся текст, если он есть
+            if current_message.strip() != "```ps\n" + table_header:
+                current_message += "```"  # Закрываем кодовый блок
+                await ctx.send(current_message, ephemeral=True)
+        else:
+            print("Ошибка получения списка игроков:", res.status, data)
+            await ctx.response.send_message(content=f'❌ Ошибка получения списка игроков:" res.status:{res.status}\nData:{data}', ephemeral=True)
+
+    except Exception as e:
+        await ctx.response.send_message(content='❌ An error occurred. Please try again later.', ephemeral=True)
+        print(f'Error occurred during fetching server info: {e}')
+    finally:
+        conn.close()
+        conn = None
+
+@bot.slash_command(name=f'{command_prefex}_players_info', description="Request Players info")
+async def players(ctx: disnake.ApplicationCommandInteraction):
+    global conn, access_token, refresh_token
+    if ctx.author.guild_permissions.administrator:
+        try:
+            await auth(address)
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            conn.request("GET", "/api/OnlinePlayers", headers=headers)
+            res = conn.getresponse()
+            data = res.read().decode("utf-8")
+            if res.status == 200:
+                #print("Список онлайн игроков:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
+                players_data = json.loads(data)
+
+                index = "#"
+                name = "Name"
+                level = "LvL"
+                platformId = "ID"
+                ping = "Png"
+
+                ip = "IP"
+                zombieKills = "zKill"
+                deaths = "Die"
+                totalTimePlayed = "PlayTime"
+
+                table_header = f"|{name:<14}|{ping:<3}|{ip:<16}|{platformId:<17}|\n"
+                table_rows = ""
+
+                for index, player in enumerate(players_data, start=1):
+                    name = player["playerName"]
+                    level = player["playerDetails"]["level"]
+                    platformId = player["platformId"].replace("Steam_", "")
+                    ping = player["ping"]
+                    ip = player["ip"]
+                    zombieKills = player["playerDetails"]["zombieKills"]
+                    deaths = player["playerDetails"]["deaths"]
+                    
+                    totalTimePlayed = player["playerDetails"]["totalTimePlayed"]
+                    days = int(totalTimePlayed // (24 * 3600))
+                    hours = int((totalTimePlayed % (24 * 3600)) // 3600)
+                    minutes = int((totalTimePlayed % 3600) // 60)
+                    totalTimePlayed = f"{days:02}:{hours:02}:{minutes:02}"
+
+                    table_rows += f"|{name:<14}|{ping:<3}|{ip:<16}|{platformId:<17}|\n"
+
+                # Формируем сообщение с таблицей
+                full_table = f"```ps\n{table_header}{table_rows}```"
+
+                # Разделяем сообщение на части по 1500 символов
+                max_length = 1700
+                current_message = "```ps\n" + table_header  # Начинаем с заголовка
+
+                for row in table_rows.splitlines(keepends=True):  # Сохраняем переносы строк
+                    if len(current_message) + len(row) > max_length:
+                        # Если добавление строки превышает лимит, отправляем текущее сообщение
+                        current_message += "```"  # Закрываем кодовый блок
+                        await ctx.send(current_message, ephemeral=True)
+                        current_message = "```ps\n" + table_header + row  # Начинаем новый блок с заголовком
+                    else:
+                        current_message += row  # Добавляем строку в текущее сообщение
+
+                # Отправляем оставшийся текст, если он есть
+                if current_message.strip() != "```ps\n" + table_header:
+                    current_message += "```"  # Закрываем кодовый блок
+                    await ctx.send(current_message, ephemeral=True)
+            else:
+                print("Ошибка получения списка игроков:", res.status, data)
+                await ctx.response.send_message(content=f'❌ Ошибка получения списка игроков:" res.status:{res.status}\nData:{data}', ephemeral=True)
+        except Exception as e:
+            await ctx.response.send_message(content='❌ An error occurred. Please try again later.', ephemeral=True)
+            print(f'Error occurred during fetching server info: {e}')
+        finally:
+            conn.close()
+            conn = None
+    else:
+        await ctx.response.send_message(content='❌ You do not have permission to run this command.', ephemeral=True)
+
+@bot.slash_command(name=f'{command_prefex}_command', description="Execute console command")
+async def players(ctx: disnake.ApplicationCommandInteraction, text: str):
+    global conn, access_token, refresh_token
+    if ctx.author.guild_permissions.administrator:
+
+        try:
+            await auth(address)
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            url = f"/api/Server/ExecuteConsoleCommand?command={text}&inMainThread=False"
+            conn.request("POST", url, None, headers)
+            res = conn.getresponse()
+            data = res.read().decode("utf-8")
+
+            if res.status == 200:
+                #print("Результат:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
+                #data = json.loads(data)
+                #print(f"data:\n{data}")
+
+                #formatted_result = json.dumps(json.loads(data), indent=4, ensure_ascii=False)
+                
+                formatted_text = "\n".join(data).replace('\r\n', '\n')
+                print(f"{formatted_text}")
+
+            else:
+                #print(f"res.status: {res.status}\ndata:\n{data}")
+                await ctx.response.send_message(content=f'❌ERROR\nres.status: {res.status}\ndata:\n{data}', ephemeral=false)
+
+        except Exception as e:
+            await ctx.response.send_message(content='❌ An error occurred. Please try again later.', ephemeral=True)
+            print(f'Error occurred during fetching server info: {e}')
+
+        finally:
+            conn.close()
+            conn = None
     else:
         await ctx.response.send_message(content='❌ You do not have permission to run this command.', ephemeral=True)
 
