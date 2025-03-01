@@ -305,16 +305,32 @@ async def update_status():
             'Authorization': f'Bearer {access_token}',
             'Content-Type': 'application/json'
         }
-        conn.request("GET", "/api/Server/Stats", headers=headers)
-        res = conn.getresponse()
-        data = res.read().decode("utf-8")
+        try:
+            conn.request("GET", "/api/Server/Stats", headers=headers)
+            res = conn.getresponse()
+            data = res.read().decode("utf-8")
+        except Exception as e:
+            print(f"/api/Server/Stats: {e}")
+        try:
+            payload = ''
+            conn.request("GET", "/api/Server/GameInfo", payload, headers)
+            res2 = conn.getresponse()
+            data2 = res2.read().decode("utf-8")
+            #print(json.dumps(json.loads(data2), indent=4, ensure_ascii=False))
+            if res2.status == 200:
+                try:
+                    data_list2 = json.loads(data2)
+                except Exception as e:
+                    pass
+        except Exception as e:
+            print(f"/api/Server/GameInfo: {e}")
+
         if res.status == 200:
             try:
                 data_list = json.loads(data)  # Декодируем JSON в список
             except Exception as e:
                 activity = disnake.Game(name=f"Offline")
                 await bot.change_presence(status=disnake.Status.online, activity=activity)
-
             if data_list:
 
                 online_players = data_list.get("onlinePlayers", 0)
@@ -334,6 +350,13 @@ async def update_status():
             game_minutes = data_list["gameTime"].get("minutes", 0)
             add_code_string = eval(f'f"""{add_string}"""')
 
+            try:
+                cycle_length = data_list2.get('BloodMoonFrequency', {'value': 0})['value']
+                next_blood_moon = ((game_days // cycle_length) + 1) * cycle_length
+                days_until = next_blood_moon - game_days
+            except:
+                days_until = f"∞"
+
             message = (
                 f":earth_africa:Direct Link:                    **```{data_list.get("serverIp", 0)}:{data_list.get("serverPort", 0)}```**\n"
                 f":map: Map:                                    **{data_list.get("gameWorld", 0)}**\n"
@@ -344,7 +367,8 @@ async def update_status():
                 f"{f'{add_code_string}\n' if add_string else ''}"
                 f"============ Server Settings ============\n"
                 f":asterisk: Game Time:                         **{game_days}d:{game_hours}h: {game_minutes}m**\n"
-                f":first_quarter_moon: Blood Moon:              **{data_list.get('isBloodMoon', False)}{' :red_circle:' if data_list.get('isBloodMoon', 0) else ' :full_moon:'}**\n"
+                f":red_circle: Moon Cycle:                      **{cycle_length}**\n"
+                f":first_quarter_moon: Blood Moon:              **{'NOW :red_circle:' if data_list.get('isBloodMoon', 0) else f'{days_until} Day :full_moon:'}**\n"
                 f":traffic_light: Difficulty:                   **{data_list.get("gameDifficulty", 0)}**\n"
             )
             addition_embed = disnake.Embed(
@@ -369,7 +393,11 @@ async def update_status():
             colour=disnake.Colour.red(),
             description=f"offline or cannot answer",
         )
-        await message.edit(content=f'Last update: {datetime.datetime.now().strftime("%H:%M")}', embed=embed)
+        channel = await bot.fetch_channel(channel_id)
+        message = await channel.fetch_message(message_id)
+        if message:
+            await message.edit(content=f'Last update: {datetime.datetime.now().strftime("%H:%M")}', embed=embed)
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}\nBot Shards: {bot.shard_count}')
@@ -530,7 +558,7 @@ async def players(ctx: disnake.ApplicationCommandInteraction):
             totalTimePlayed = "Play"
 
             #table_header = f"|{index:<2}|{name:<12}|{level:<3}|{platformId:<18}|{ping:<4}|{playerKills:<4}|{zombieKills:<4}|{deaths:<3}|{totalTimePlayed:<4}|\n"
-            table_header = f"|{index:<2}|{name:<12}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+            table_header = f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
             table_rows = ""
 
             for index, player in enumerate(players_data, start=1):
@@ -548,7 +576,7 @@ async def players(ctx: disnake.ApplicationCommandInteraction):
                 minutes = int((totalTimePlayed % 3600) // 60)
                 totalTimePlayed = f"{hours:02}:{minutes:02}"
 
-                table_rows += f"|{index:<2}|{name:<12}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+                table_rows += f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
 
             # Формируем сообщение с таблицей
             full_table = f"```ps\n{table_header}{table_rows}```"
