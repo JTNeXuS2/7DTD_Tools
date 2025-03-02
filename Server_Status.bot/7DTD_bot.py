@@ -264,6 +264,60 @@ async def update_avatar_if_needed(bot, bot_name, bot_ava):
             await bot.user.edit(avatar=data)
         except requests.exceptions.RequestException as e:
             print(f"Error fetching avatar: {e}")
+            
+async def get_players():
+    global conn, access_token, refresh_token
+    try:
+        await auth(address)
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        conn.request("GET", "/api/OnlinePlayers", headers=headers)
+        res = conn.getresponse()
+        data = res.read().decode("utf-8")
+        if res.status == 200:
+            #print("Список онлайн игроков:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
+            players_data = json.loads(data)
+
+            index = "#"
+            name = "Name"
+            level = "LvL"
+            platformId = "ID"
+            ping = "Ping"
+
+            playerKills = "pKill"
+            zombieKills = "zKill"
+            deaths = "Die"
+            totalTimePlayed = "Play"
+
+            #table_header = f"|{index:<2}|{name:<12}|{level:<3}|{platformId:<18}|{ping:<4}|{playerKills:<4}|{zombieKills:<4}|{deaths:<3}|{totalTimePlayed:<4}|\n"
+            table_header = f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+            table_rows = f"|{'':<17}No Online Players{'':<17}|"
+
+            for index, player in enumerate(players_data, start=1):
+                name = player["playerName"]
+                level = player["playerDetails"]["level"]
+                platformId = player["platformId"].replace("Steam_", "")
+                ping = player["ping"]
+                playerKills = player["playerDetails"]["playerKills"]
+                zombieKills = player["playerDetails"]["zombieKills"]
+                deaths = player["playerDetails"]["deaths"]
+                
+                totalTimePlayed = player["playerDetails"]["totalTimePlayed"]
+                days = int(totalTimePlayed // (24 * 3600))
+                hours = int((totalTimePlayed % (24 * 3600)) // 3600)
+                minutes = int((totalTimePlayed % 3600) // 60)
+                totalTimePlayed = f"{hours:02}:{minutes:02}"
+
+                table_rows += f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+            return table_header, table_rows
+        else:
+            return None, None
+
+    except Exception as e:
+        print(f"Ошибка get_players: {e}")
+        return None, None
 
 @tasks.loop(seconds=0.1)
 async def message_sender():
@@ -348,29 +402,34 @@ async def update_status():
             game_days = data_list["gameTime"].get("days", 0)
             game_hours = data_list["gameTime"].get("hours", 0)
             game_minutes = data_list["gameTime"].get("minutes", 0)
-            add_code_string = eval(f'f"""{add_string}"""')
+
 
             try:
+                moon_now = data_list.get('isBloodMoon', 0)
                 cycle_length = data_list2.get('BloodMoonFrequency', {'value': 0})['value']
                 next_blood_moon = ((game_days // cycle_length) + 1) * cycle_length
-                days_until = next_blood_moon - game_days
+                days_until = '0' if (next_blood_moon - game_days >= cycle_length) else f'{next_blood_moon - game_days}'
             except:
                 days_until = f"∞"
+            try:
+                add_code_string = eval(f'f"""{add_string}"""')
+                message = (
+                    f":green_circle: Online:                        **{online_players}/{max_players}**\n"
+                    f":link:Direct Link:                            **```{data_list.get("serverIp", 0)}:{data_list.get("serverPort", 0)}```**\n"
+                    f":earth_americas: World:                       **{data_list.get("gameWorld", 0)}**\n"
+                    f":film_frames: FPS:                            **{int(data_list.get("fps", 0))}**\n"
+                    f":timer: UpTime:                               **{hours}:{minutes}**\n"
+                    f":newspaper: Ver:                              **{data_list.get("serverVersion", 0)}**\n"
+                    f"{f'{add_code_string}\n' if add_string else ''}"
+                    f"============ Server Settings ============\n"
+                    f":date: Game Time:                             **{game_days}d:{game_hours:02}h: {game_minutes:02}m**\n"
+                    f":waxing_crescent_moon: Moon Cycle:            **{cycle_length}**\n"
+                    f":first_quarter_moon: Blood Moon:              **{'NOW :red_circle:' if moon_now else f'{days_until} Day :full_moon:'}**\n"
+                    f":traffic_light: Difficulty:                   **{data_list.get("gameDifficulty", 0)}**\n"
+                )
+            except Exception as e:
+                message = "Error forming message {e}"
 
-            message = (
-                f":earth_africa:Direct Link:                    **```{data_list.get("serverIp", 0)}:{data_list.get("serverPort", 0)}```**\n"
-                f":map: Map:                                    **{data_list.get("gameWorld", 0)}**\n"
-                f":green_circle: Online:                        **{online_players}/{max_players}**\n"
-                f":film_frames: FPS:                            **{int(data_list.get("fps", 0))}**\n"
-                f":timer: UpTime:                               **{hours}:{minutes}**\n"
-                f":newspaper: Ver:                              **{data_list.get("serverVersion", 0)}**\n"
-                f"{f'{add_code_string}\n' if add_string else ''}"
-                f"============ Server Settings ============\n"
-                f":asterisk: Game Time:                         **{game_days}d:{game_hours}h: {game_minutes}m**\n"
-                f":red_circle: Moon Cycle:                      **{cycle_length}**\n"
-                f":first_quarter_moon: Blood Moon:              **{'NOW :red_circle:' if data_list.get('isBloodMoon', 0) else f'{days_until} Day :full_moon:'}**\n"
-                f":traffic_light: Difficulty:                   **{data_list.get("gameDifficulty", 0)}**\n"
-            )
             addition_embed = disnake.Embed(
                 title=f"**{data_list.get("serverName", 0)}**",
                 colour=disnake.Colour.green(),
@@ -385,7 +444,6 @@ async def update_status():
             except Exception as e:
                 print(f'Failed to fetch channel, message or server data. Maybe try /{command_prefex}_sendhere\n {e}')
         await upd_msg()
-
     except Exception as e:
         print(f'Cant connect to server, check ip and query/rest_api port \n ERROR >>: {e}')
         embed = disnake.Embed(
@@ -397,7 +455,36 @@ async def update_status():
         message = await channel.fetch_message(message_id)
         if message:
             await message.edit(content=f'Last update: {datetime.datetime.now().strftime("%H:%M")}', embed=embed)
+    #update player banner
+    try:
+        table_header, table_rows = await get_players()
+        full_table = f"```ps\n{table_header}{table_rows}```"
 
+        # Проверка длины full_table
+        if len(full_table) > 4096:
+            full_table = full_table[:4090] + '...'  # Обрезаем и добавляем многоточие, чтобы не превышать лимит
+
+        embed = disnake.Embed(
+            title=f"",
+            colour=disnake.Colour(int("FF00FF", 16)),
+            description=f"{full_table}",
+        )
+        
+        channel = await bot.fetch_channel(channel_id)
+        message = await channel.fetch_message(players_message_id)
+        if message:
+            await message.edit(content=f'', embed=embed)
+    except Exception as e:
+        print(f"{players_message_id} Error: {e}")
+        embed = disnake.Embed(
+            title=f"**{address[0]}:{address[2]}**",
+            colour=disnake.Colour.red(),
+            description=f"offline or cannot answer",
+        )
+        channel = await bot.fetch_channel(channel_id)
+        message = await channel.fetch_message(players_message_id)
+        if message:
+            await message.edit(content=f'', embed=embed)
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}\nBot Shards: {bot.shard_count}')
@@ -465,11 +552,17 @@ async def sendhere(ctx: disnake.ApplicationCommandInteraction):
             print(f'New channel id - {ctx.channel.id}')
             await write_cfg('botconfig', 'channel_id', str(ctx.channel.id))
             channel = await guild.fetch_channel(ctx.channel.id)
+            
             await ctx.response.send_message(content=f'This message for auto updated the status', ephemeral=False)
-
             last_message = await ctx.channel.fetch_message(ctx.channel.last_message_id)
             print(f'New message id - {last_message.id}')
             await write_cfg('botconfig', 'message_id', str(last_message.id))
+
+            await ctx.followup.send(content=f'This message for auto updated the status players', ephemeral=False)
+            last_message = await ctx.channel.fetch_message(ctx.channel.last_message_id)
+            print(f'New players message id - {last_message.id}')
+            await write_cfg('botconfig', 'players_message_id', str(last_message.id))
+
             update_settings()
 
         except Exception as e:
@@ -534,50 +627,8 @@ async def status(ctx: disnake.ApplicationCommandInteraction, ip: str = None, que
 async def players(ctx: disnake.ApplicationCommandInteraction):
     global conn, access_token, refresh_token
     try:
-        await auth(address)
-        headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json'
-        }
-        conn.request("GET", "/api/OnlinePlayers", headers=headers)
-        res = conn.getresponse()
-        data = res.read().decode("utf-8")
-        if res.status == 200:
-            #print("Список онлайн игроков:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
-            players_data = json.loads(data)
-
-            index = "#"
-            name = "Name"
-            level = "LvL"
-            platformId = "ID"
-            ping = "Ping"
-
-            playerKills = "pKill"
-            zombieKills = "zKill"
-            deaths = "Die"
-            totalTimePlayed = "Play"
-
-            #table_header = f"|{index:<2}|{name:<12}|{level:<3}|{platformId:<18}|{ping:<4}|{playerKills:<4}|{zombieKills:<4}|{deaths:<3}|{totalTimePlayed:<4}|\n"
-            table_header = f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
-            table_rows = ""
-
-            for index, player in enumerate(players_data, start=1):
-                name = player["playerName"]
-                level = player["playerDetails"]["level"]
-                platformId = player["platformId"].replace("Steam_", "")
-                ping = player["ping"]
-                playerKills = player["playerDetails"]["playerKills"]
-                zombieKills = player["playerDetails"]["zombieKills"]
-                deaths = player["playerDetails"]["deaths"]
-                
-                totalTimePlayed = player["playerDetails"]["totalTimePlayed"]
-                days = int(totalTimePlayed // (24 * 3600))
-                hours = int((totalTimePlayed % (24 * 3600)) // 3600)
-                minutes = int((totalTimePlayed % 3600) // 60)
-                totalTimePlayed = f"{hours:02}:{minutes:02}"
-
-                table_rows += f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
-
+        table_header, table_rows = await get_players()
+        if table_header and table_rows:
             # Формируем сообщение с таблицей
             full_table = f"```ps\n{table_header}{table_rows}```"
 
@@ -610,7 +661,7 @@ async def players(ctx: disnake.ApplicationCommandInteraction):
         conn = None
 
 @bot.slash_command(name=f'{command_prefex}_players_info', description="Request Players info")
-async def players(ctx: disnake.ApplicationCommandInteraction):
+async def players_info(ctx: disnake.ApplicationCommandInteraction):
     global conn, access_token, refresh_token
     if ctx.author.guild_permissions.administrator:
         try:
@@ -690,7 +741,7 @@ async def players(ctx: disnake.ApplicationCommandInteraction):
         await ctx.response.send_message(content='❌ You do not have permission to run this command.', ephemeral=True)
 
 @bot.slash_command(name=f'{command_prefex}_command', description="Execute console command")
-async def players(ctx: disnake.ApplicationCommandInteraction, text: str):
+async def command(ctx: disnake.ApplicationCommandInteraction, text: str):
     global conn, access_token, refresh_token
     if ctx.author.guild_permissions.administrator:
 
