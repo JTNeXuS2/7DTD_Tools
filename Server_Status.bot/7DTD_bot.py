@@ -143,11 +143,11 @@ async def watch_log_file(log_directory):
 
 async def process_line(line):
     # Parse log string
-    chat_pattern = r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) (\w+) (.+?): (.+)"
-
+    chat_pattern = r"(\d{2}[./]\d{2}[./]\d{4}|[^\s]+) (\d{2}:\d{2}:\d{2}) (\w+) (.+?): (.+)"
     # Parse Chat
     chat_match = re.match(chat_pattern, line)
     if chat_match:
+
         timestamp = chat_match.group(2)
         channel = chat_match.group(3)
         nick = chat_match.group(4)
@@ -279,7 +279,6 @@ async def get_players():
         if res.status == 200:
             #print("Список онлайн игроков:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
             players_data = json.loads(data)
-
             index = "#"
             name = "Name"
             level = "LvL"
@@ -292,25 +291,46 @@ async def get_players():
             totalTimePlayed = "Play"
 
             #table_header = f"|{index:<2}|{name:<12}|{level:<3}|{platformId:<18}|{ping:<4}|{playerKills:<4}|{zombieKills:<4}|{deaths:<3}|{totalTimePlayed:<4}|\n"
-            table_header = f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
-            table_rows = f"|{'':<17}No Online Players{'':<17}|"
+            table_header = f"|{index:<2}|{name:<18}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+            table_rows = ""
+            players_info = []
+            if not players_data:
+                table_rows = f"|{'':<17}No Online Players{'':<18}|"
+            else:
+                for player in players_data:
+                    name = player["playerName"]
+                    level = player["playerDetails"]["level"]
+                    platformId = player["platformId"].replace("Steam_", "")
+                    ping = player["ping"]
+                    playerKills = player["playerDetails"]["playerKills"]
+                    zombieKills = player["playerDetails"]["zombieKills"]
+                    deaths = player["playerDetails"]["deaths"]
+                    
+                    totalTimePlayed = player["playerDetails"]["totalTimePlayed"]
+                    days = int(totalTimePlayed // (24 * 3600))
+                    hours = int((totalTimePlayed % (24 * 3600)) // 3600)
+                    minutes = int((totalTimePlayed % 3600) // 60)
+                    totalTimePlayed = f"{hours:02}:{minutes:02}"
 
-            for index, player in enumerate(players_data, start=1):
-                name = player["playerName"]
-                level = player["playerDetails"]["level"]
-                platformId = player["platformId"].replace("Steam_", "")
-                ping = player["ping"]
-                playerKills = player["playerDetails"]["playerKills"]
-                zombieKills = player["playerDetails"]["zombieKills"]
-                deaths = player["playerDetails"]["deaths"]
-                
-                totalTimePlayed = player["playerDetails"]["totalTimePlayed"]
-                days = int(totalTimePlayed // (24 * 3600))
-                hours = int((totalTimePlayed % (24 * 3600)) // 3600)
-                minutes = int((totalTimePlayed % 3600) // 60)
-                totalTimePlayed = f"{hours:02}:{minutes:02}"
+                    # Добавляем информацию о игроке в список
+                    players_info.append({
+                        "name": name,
+                        "level": level,
+                        "ping": ping,
+                        "playerKills": playerKills,
+                        "zombieKills": zombieKills,
+                        "deaths": deaths,
+                        "totalTimePlayed": totalTimePlayed,
+                        "effectiveZombieKills": zombieKills - (deaths * 50)  # Эффективные убийства зомби
+                    })
 
-                table_rows += f"|{index:<2}|{name:<17}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+                # Сортируем список по эффективным zombieKills от большего к меньшему
+                players_info.sort(key=lambda x: x["effectiveZombieKills"], reverse=True)
+
+                # Формируем строку table_rows из отсортированных данных
+                for index, player in enumerate(players_info, start=1):
+                    table_rows += f"|{index:<2}|{normalize_string(player['name']):<18}|{player['level']:<3}|{player['ping']:<4}|{player['playerKills']:<5}|{player['zombieKills']:<5}|{player['deaths']:<3}|{player['totalTimePlayed']:<5}|\n"
+                    
             return table_header, table_rows
         else:
             return None, None
@@ -383,6 +403,7 @@ async def update_status():
             try:
                 data_list = json.loads(data)  # Декодируем JSON в список
             except Exception as e:
+                data_list = None
                 activity = disnake.Game(name=f"Offline")
                 await bot.change_presence(status=disnake.Status.online, activity=activity)
             if data_list:
@@ -395,13 +416,14 @@ async def update_status():
 
         async def upd_msg():
             update_settings()
-            uptime_seconds = int(data_list.get("uptime", 0))
-            hours = f"{uptime_seconds // 3600:02}"
-            minutes = f"{(uptime_seconds % 3600) // 60:02}"
-            
-            game_days = data_list["gameTime"].get("days", 0)
-            game_hours = data_list["gameTime"].get("hours", 0)
-            game_minutes = data_list["gameTime"].get("minutes", 0)
+            if data_list:
+                uptime_seconds = int(data_list.get("uptime", 0))
+                hours = f"{uptime_seconds // 3600:02}"
+                minutes = f"{(uptime_seconds % 3600) // 60:02}"
+                
+                game_days = data_list["gameTime"].get("days", 0)
+                game_hours = data_list["gameTime"].get("hours", 0)
+                game_minutes = data_list["gameTime"].get("minutes", 0)
 
 
             try:
@@ -415,20 +437,20 @@ async def update_status():
                 add_code_string = eval(f'f"""{add_string}"""')
                 message = (
                     f":green_circle: Online:                        **{online_players}/{max_players}**\n"
-                    f":link:Direct Link:                            **```{data_list.get("serverIp", 0)}:{data_list.get("serverPort", 0)}```**\n"
+                    f":link:Direct Link:                            **```{data_list2.get('IP', {'value': 0})['value']}:{data_list.get("serverPort", 0)}```**\n"
                     f":earth_americas: World:                       **{data_list.get("gameWorld", 0)}**\n"
                     f":film_frames: FPS:                            **{int(data_list.get("fps", 0))}**\n"
                     f":timer: UpTime:                               **{hours}:{minutes}**\n"
                     f":newspaper: Ver:                              **{data_list.get("serverVersion", 0)}**\n"
                     f"{f'{add_code_string}\n' if add_string else ''}"
                     f"============ Server Settings ============\n"
-                    f":date: Game Time:                             **{game_days}d:{game_hours:02}h: {game_minutes:02}m**\n"
+                    f":date: Game Time:                             **{game_days}d :timer: {game_hours:02}h:{game_minutes:02}m**\n"
                     f":waxing_crescent_moon: Moon Cycle:            **{cycle_length}**\n"
                     f":first_quarter_moon: Blood Moon:              **{'NOW :red_circle:' if moon_now else f'{days_until} Day :full_moon:'}**\n"
                     f":traffic_light: Difficulty:                   **{data_list.get("gameDifficulty", 0)}**\n"
                 )
             except Exception as e:
-                message = "Error forming message {e}"
+                message = f"Error forming message {e}"
 
             addition_embed = disnake.Embed(
                 title=f"**{data_list.get("serverName", 0)}**",
@@ -469,7 +491,8 @@ async def update_status():
             colour=disnake.Colour(int("FF00FF", 16)),
             description=f"{full_table}",
         )
-        
+        embed.set_image(url=f"http://65.109.113.61:26980/footbar.png?timestamp={int(time.time())}")
+        #embed.set_footer(text="banner", icon_url=f"http://65.109.113.61:26980/footbar.png?timestamp={int(time.time())}")
         channel = await bot.fetch_channel(channel_id)
         message = await channel.fetch_message(players_message_id)
         if message:
@@ -515,7 +538,7 @@ async def on_message(message):
         text = ''
         #print(f"global_name: {message.author.global_name} text: {text}")
         role_color = f"[{str(message.author.color).lstrip('#')}]" if message.author.color else ""
-        await send_annonce(f"{role_color}[Discord]{message.author.global_name}", message.content)
+        await send_annonce(f"{role_color}[Discord]{message.author.global_name}[-]", message.content)
 
 #template admin commands
 '''
