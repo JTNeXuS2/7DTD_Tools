@@ -15,6 +15,7 @@ import unicodedata
 from requests.auth import HTTPBasicAuth
 from concurrent.futures import ThreadPoolExecutor
 
+import urllib.parse
 import http.client
 import aiohttp
 import asyncio
@@ -58,7 +59,7 @@ async def write_cfg(section, key, value):
     with open('config.ini', 'w', encoding='utf-8') as configfile:
         config.write(configfile)
 def update_settings():
-    global token, channel_id, crosschat_id, message_id, update_time, bot_name, bot_ava, address, command_prefex, username, password, log_directory, webhook_url, add_string, players_message_id
+    global token, channel_id, crosschat_id, message_id, update_time, bot_name, bot_ava, address, user_role_ids, command_prefex, username, password, log_dir, chatlog_dir, webhook_url, add_string, players_message_id
 
     config = read_cfg()
     if config:
@@ -74,10 +75,15 @@ def update_settings():
             password = config['botconfig'].get('password', None)
             update_time = config['botconfig'].get('update_time', None)
             command_prefex = config['botconfig'].get('command_prefex', None) and config['botconfig'].get('command_prefex').lower()
-            address = (config['botconfig'].get('ip', None), int(config['botconfig'].get('query_port', 0)), int(config['botconfig'].get('restapi_port', 0)))
-            log_directory = config['botconfig'].get('log_dir', None)
+            address = (config['botconfig'].get('ip', None), int(config['botconfig'].get('query_port', 0)), int(config['botconfig'].get('restapi_port', 0)), config['botconfig'].get('telnet_port', 0))
+            log_dir = config['botconfig'].get('log_dir', None)
+            chatlog_dir = config['botconfig'].get('chatlog_dir', None)
             webhook_url = config['botconfig'].get('webhook_url', None)
             add_string = config['botconfig'].get('add_string', "")
+
+            user_role_ids = config['botconfig'].get('user_role_ids', None)
+            if user_role_ids is not None:
+                user_role_ids = [int(role_id.strip()) for role_id in user_role_ids.split(',')]
 
         except ValueError as e:
             print(f"Error: wrong value in config file {e}")
@@ -97,14 +103,25 @@ update_time = 10
 address = None
 command_prefex = None
 webhook_url = None
-log_directory = None
+
+log_dir = None
 current_file = None
+file_position = 0
+
 conn = None
 access_token = None
 refresh_token = None
-file_position = 0
 add_string = ""
+user_role_ids = []
 
+chatlog_dir = None
+current_file2 = None
+file2_position = 0
+webhook_url2 = "https://discord.com/api/webhooks/1350263539427835914/DXbJhJsJEHPrlKkpBrtalZKMNXzwlbjYr2mNFg6HDBFK62mMbUfLAx5HtNbAmUZoMKjM"
+find_error = "NullReferenceException: Object reference not set to an instance of an object"
+
+count = 0
+max_errors = 100 
 useonce = None
 update_settings()
 
@@ -117,16 +134,21 @@ client = commands.Bot(command_prefix=prefix, intents=intents, case_insensitive=T
 #bot = commands.Bot(command_prefix=prefix, intents=intents, case_insensitive=True)
 bot = commands.AutoShardedBot(command_prefix=prefix, intents=intents, shard_count=shard_count ,case_insensitive=True)
 
-def find_latest_file(log_directory):
-    list_of_files = glob.glob(f'{log_directory}*')
-    latest_file = max(list_of_files, key=os.path.getctime)
+def find_latest_file(logs_dir):
+    latest_file = None
+    try:
+        list_of_files = glob.glob(f'{logs_dir}*')
+        latest_file = max(list_of_files, key=os.path.getctime)
+    except Exception as e:
+        return None
+        print(f"Error find_latest_file: {e}")
     return latest_file
 
-async def watch_log_file(log_directory):
+async def watch_log_file(chatlog_dir):
     global current_file, file_position
     old_line = ""
     while True:
-        new_file = find_latest_file(log_directory)
+        new_file = find_latest_file(chatlog_dir)
         if new_file != current_file:
             current_file = new_file
             print(f"watch log start at {current_file}")
@@ -139,6 +161,46 @@ async def watch_log_file(log_directory):
             if line != old_line:
                 await process_line(line)
                 old_line = line
+        await asyncio.sleep(1)
+
+async def watch_log_file2(log_dir):
+    global current_file2, file2_position, count
+    old_line = ""
+    start_time = time.time()
+    count = 0
+
+    while True:
+        new_file = find_latest_file(log_dir)
+        if new_file != current_file2:
+            current_file2 = new_file
+            print(f"watch log start at {current_file2}")
+            file2_position = 0
+
+        async with aiofiles.open(current_file2, 'r', encoding='utf-8') as file:
+            await file.seek(file2_position)
+            lines = await file.readlines()
+            file2_position = await file.tell()
+
+        for line in lines:
+            if line != old_line:
+                if find_error in line:
+                    count += 1
+                    #print(f"{count}")
+                old_line = line
+
+        if time.time() - start_time >= 3:
+            if count > max_errors:
+                print("Auto FIX_IT")
+                await send_api_command(f"ty-rax")
+
+                data = {"content": f"**AutoFIX**\n trying auto fix server:\n errors >{count}"}
+                response = requests.post(webhook_url2, json=data)
+                if response.status_code != 204:
+                    print(f"Error sending message to Discord: {response.status_code} - {response.text}")
+                await asyncio.sleep(5)
+
+            start_time = time.time()
+            count = 0
         await asyncio.sleep(1)
 
 async def process_line(line):
@@ -268,6 +330,7 @@ async def update_avatar_if_needed(bot, bot_name, bot_ava):
 async def get_players():
     global conn, access_token, refresh_token
     try:
+        data = None
         await auth(address)
         headers = {
             'Authorization': f'Bearer {access_token}',
@@ -275,10 +338,15 @@ async def get_players():
         }
         conn.request("GET", "/api/OnlinePlayers", headers=headers)
         res = conn.getresponse()
-        data = res.read().decode("utf-8")
+        if res is not None:
+            data = res.read().decode("utf-8")
+        else:
+            print(f"WARN get_players: res is None ")
+            return None, None
         if res.status == 200:
             #print("Список онлайн игроков:\n", json.dumps(json.loads(data), indent=4, ensure_ascii=False))
-            players_data = json.loads(data)
+            if data:
+                players_data = json.loads(data)
             index = "#"
             name = "Name"
             level = "LvL"
@@ -291,7 +359,7 @@ async def get_players():
             totalTimePlayed = "Play"
 
             #table_header = f"|{index:<2}|{name:<12}|{level:<3}|{platformId:<18}|{ping:<4}|{playerKills:<4}|{zombieKills:<4}|{deaths:<3}|{totalTimePlayed:<4}|\n"
-            table_header = f"|{index:<2}|{name:<18}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}|{totalTimePlayed:<5}|\n"
+            table_header = f"|{index:<2}|{name:<18}|{level:<3}|{ping:<4}|{playerKills:<5}|{zombieKills:<5}|{deaths:<3}\n"
             table_rows = ""
             players_info = []
             if not players_data:
@@ -329,7 +397,8 @@ async def get_players():
 
                 # Формируем строку table_rows из отсортированных данных
                 for index, player in enumerate(players_info, start=1):
-                    table_rows += f"|{index:<2}|{normalize_string(player['name']):<18}|{player['level']:<3}|{player['ping']:<4}|{player['playerKills']:<5}|{player['zombieKills']:<5}|{player['deaths']:<3}|{player['totalTimePlayed']:<5}|\n"
+                    #table_rows += f"|{index:<2}|{normalize_string(player['name']):<18}|{player['level']:<3}|{player['ping']:<4}|{player['playerKills']:<5}|{player['zombieKills']:<5}|{player['deaths']:<3}|{player['totalTimePlayed']:<5}|\n"
+                    table_rows += f"|{index:<2}|{normalize_string(player['name']):<18}|{player['level']:<3}|{player['ping']:<4}|{player['playerKills']:<5}|{player['zombieKills']:<5}|{player['deaths']:<3}|\n"
                     
             return table_header, table_rows
         else:
@@ -338,6 +407,42 @@ async def get_players():
     except Exception as e:
         print(f"Ошибка get_players: {e}")
         return None, None
+
+async def send_long_message(ctx, content, ephemeral=True, max_length=1900):
+    messages = []
+    current_message = ""
+    ephemeral = False
+    for line in content.splitlines():
+        if len(current_message) + len(line) + 1 > max_length:
+            messages.append(current_message)
+            current_message = line
+        else:
+            if current_message:
+                current_message += "\n"
+            current_message += line
+    if current_message:
+        messages.append(current_message)
+    await ctx.followup.send(content=messages[0], ephemeral=ephemeral)
+    for message in messages[1:]:
+        await ctx.followup.send(content=message, ephemeral=ephemeral)
+
+async def send_api_command(text):
+
+    global conn, access_token, refresh_token
+    res = None
+    await auth(address)
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json'
+    }
+    encoded_text = urllib.parse.quote(text)
+    #print(f"{encoded_text}")
+    url = f"/api/Server/ExecuteConsoleCommand?command={encoded_text}&inMainThread=True"
+    #url = f"/api/Server/ExecuteConsoleCommand?command={text}&inMainThread=True"
+    conn.request("POST", url, None, headers)
+    res = conn.getresponse()
+    #data = res.read().decode("utf-8")
+    return res
 
 @tasks.loop(seconds=0.1)
 async def message_sender():
@@ -356,20 +461,38 @@ async def message_sender():
         print(f'\nmessage buffer ERROR >>: {e}')
 
 @tasks.loop(seconds=2)
-async def watch_logs():
+async def watch_chatlog():
     global current_file, file_position
+    current_file = find_latest_file(chatlog_dir)
+
+    if not current_file:
+        return
     try:
-        current_file = find_latest_file(log_directory)
         if current_file:
             file_position = os.path.getsize(current_file)
-            print(f"watch log start at {current_file}")
-            await watch_log_file(log_directory)
+            print(f"watch chat_log start at {current_file}")
+            await watch_log_file(chatlog_dir)
+    except Exception as e:
+        print(f'watch log ERROR >>: {e}')
+
+@tasks.loop(seconds=1)
+async def watch_logs():
+    global current_file2, file2_position
+    try:
+        current_file2 = find_latest_file(log_dir)
+        if current_file2:
+            file2_position = os.path.getsize(current_file2)
+            print(f"watch log start at {current_file2}")
+            await watch_log_file2(log_dir)
     except Exception as e:
         print(f'watch log ERROR >>: {e}')
 
 @tasks.loop(seconds=int(update_time))
 async def update_status():
     global conn, access_token, refresh_token
+    data_list = None
+    data_list2 = None
+
     if bot.user.name != bot_name:
         await bot.user.edit(username=bot_name)
 
@@ -399,7 +522,7 @@ async def update_status():
         except Exception as e:
             print(f"/api/Server/GameInfo: {e}")
 
-        if res.status == 200:
+        if res is not None and res.status == 200:
             try:
                 data_list = json.loads(data)  # Декодируем JSON в список
             except Exception as e:
@@ -452,8 +575,9 @@ async def update_status():
             except Exception as e:
                 message = f"Error forming message {e}"
 
+            title_value = data_list.get("serverName", 0) if data_list is not None else "Unknown Server"
             addition_embed = disnake.Embed(
-                title=f"**{data_list.get("serverName", 0)}**",
+                title=f"**{title_value}**",
                 colour=disnake.Colour.green(),
                 description=f"{message}",
             )
@@ -467,7 +591,7 @@ async def update_status():
                 print(f'Failed to fetch channel, message or server data. Maybe try /{command_prefex}_sendhere\n {e}')
         await upd_msg()
     except Exception as e:
-        print(f'Cant connect to server, check ip and query/rest_api port \n ERROR >>: {e}')
+        print(f'Cant connect to server, check ip and query/rest_api port ERROR >>: {e}')
         embed = disnake.Embed(
             title=f"**{address[0]}:{address[2]}**",
             colour=disnake.Colour.red(),
@@ -508,6 +632,70 @@ async def update_status():
         message = await channel.fetch_message(players_message_id)
         if message:
             await message.edit(content=f'', embed=embed)
+
+@tasks.loop(seconds=10)
+async def start_plink():
+    chat_line_re = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
+    r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): '([^']+)': (.+)$"
+    )
+    # Проверяем, что процесс не запущен повторно
+    if not hasattr(start_plink, "process") or start_plink.process.returncode is not None:
+
+        #print("Запускаю plink.exe")
+        start_plink.process = await asyncio.create_subprocess_exec(
+            "plink.exe", "-telnet", address[0], "-P", address[3], "-raw",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        print("Start plink.exe, read chat...")
+        start_plink.process.stdin.write((f"{password}\n").encode())
+        await start_plink.process.stdin.drain()
+
+        async def read_stdout():
+            while True:
+                line_bytes = await start_plink.process.stdout.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode('utf-8').rstrip()
+
+                match = chat_line_re.match(line)
+                if not match:
+                    continue  # не чат-сообщение, пропускаем
+
+                content = {
+                    "from": match.group(1),
+                    "entityId": match.group(2),
+                    "to": match.group(3),
+                    "name": match.group(4),
+                    "text": match.group(5)
+                }
+
+                # Извлекаем данные для отправки в Discord
+                channel = match.group(3)  # to (канал)
+                nick = match.group(4)     # name (ник)
+                message = match.group(5)  # text (сообщение)
+
+                # Отправляем в Discord (предполагаем, что функция send_to_discord определена)
+                send_to_discord(f"[{channel}] **{nick}**", message)
+
+                #print("Чат-сообщение:", content)
+
+        async def read_stderr():
+            while True:
+                line_bytes = await start_plink.process.stderr.readline()
+                if not line_bytes:
+                    break
+                decoded_line = line_bytes.decode('utf-8').rstrip()
+                print(f"Ошибка plink: {decoded_line}")
+
+        asyncio.create_task(read_stdout())
+        asyncio.create_task(read_stderr())
+
+        await start_plink.process.wait()
+        print("Процесс plink.exe завершился.")
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}\nBot Shards: {bot.shard_count}')
@@ -523,7 +711,9 @@ async def on_ready():
     except Exception as e:
         print(f'update_avatar ERROR >>: {e}')
     update_status.start()
+    watch_chatlog.start()
     watch_logs.start()
+    start_plink.start()
     message_sender.start()
 
 @bot.event
@@ -765,19 +955,31 @@ async def players_info(ctx: disnake.ApplicationCommandInteraction):
 
 @bot.slash_command(name=f'{command_prefex}_command', description="Execute console command")
 async def command(ctx: disnake.ApplicationCommandInteraction, text: str):
-    global conn, access_token, refresh_token
-    if ctx.author.guild_permissions.administrator:
+    global conn, access_token, refresh_token, user_role_ids
+    
+    #if ctx.author.guild_permissions.administrator:
+    if ctx.author.guild_permissions.administrator or \
+       any(role.id in user_role_ids for role in ctx.author.roles) or \
+       ctx.author.id in user_role_ids:
+        await ctx.response.defer()
+        if text.lower() == "server kill":
+            print(f"call Kill server!!!")
+            bat_file_path = r"C:\7DTD\Server\server_killer.bat"
+            try:
+                #subprocess.run(bat_file_path, check=True)
+                subprocess.Popen(["cmd.exe", "/c", bat_file_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                #send = f"cmd.exe /c echo {command}|plink.exe -telnet 127.0.0.1 -P {port} -raw -batch"
+                #process = subprocess.Popen(send, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                #output, error = process.communicate()
+                
+                await send_long_message(ctx, "принудительное завершения сервера")
+            except subprocess.CalledProcessError as e:
+                print(f"Ошибка при выполнении {bat_file_path}: {e}")
+            return
 
         try:
             await auth(address)
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json'
-            }
-            
-            url = f"/api/Server/ExecuteConsoleCommand?command={text}&inMainThread=False"
-            conn.request("POST", url, None, headers)
-            res = conn.getresponse()
+            res = await send_api_command(text)
             data = res.read().decode("utf-8")
 
             if res.status == 200:
@@ -785,24 +987,27 @@ async def command(ctx: disnake.ApplicationCommandInteraction, text: str):
                 #data = json.loads(data)
                 #print(f"data:\n{data}")
 
-                #formatted_result = json.dumps(json.loads(data), indent=4, ensure_ascii=False)
-                
-                formatted_text = "\n".join(data).replace('\r\n', '\n')
-                print(f"{formatted_text}")
+                formatted_text = "\n".join(item.replace("\r\n", "\n") for item in json.loads(data))
+                #print(f"{formatted_text}")
+
+                #await ctx.response.send_message(content=f'{formatted_text}', ephemeral=True)
+                await send_long_message(ctx, formatted_text)
 
             else:
                 #print(f"res.status: {res.status}\ndata:\n{data}")
-                await ctx.response.send_message(content=f'❌ERROR\nres.status: {res.status}\ndata:\n{data}', ephemeral=false)
+                #await ctx.response.send_message(content=f'❌ERROR\nres.status: {res.status}\ndata:\n{data}', ephemeral=False)
+                await ctx.followup.send(content=f'❌ERROR\nres.status: {res.status}\ndata:\n{data}', ephemeral=True)
 
         except Exception as e:
-            await ctx.response.send_message(content='❌ An error occurred. Please try again later.', ephemeral=True)
+            await ctx.followup.send(content='❌ An error occurred. Please try again later.', ephemeral=True)
             print(f'Error occurred during fetching server info: {e}')
 
         finally:
-            conn.close()
-            conn = None
+            if conn:
+                conn.close()
+                conn = None
     else:
-        await ctx.response.send_message(content='❌ You do not have permission to run this command.', ephemeral=True)
+        await ctx.followup.send(content='❌ You do not have permission to run this command.', ephemeral=True)
 
 try:
     bot.run(token)
