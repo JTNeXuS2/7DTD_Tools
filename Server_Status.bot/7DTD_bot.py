@@ -27,6 +27,9 @@ import random
 import aiofiles
 import psutil
 
+import telnetlib
+import chat_handler  # Импорт функций из chat_handler.py
+
 #Buffer Limits
 from collections import deque
 MAX_MESSAGES = 14
@@ -635,83 +638,114 @@ async def update_status():
 
 @tasks.loop(seconds=10)
 async def start_plink():
-    chat_line_re = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
-    r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): '([^']+)': (.+)$"
+    chat_line = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
+        r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): '([^']+)': (.+)$"
     )
-    # Проверяем, что процесс не запущен повторно
-    if not hasattr(start_plink, "process") or start_plink.process.returncode is not None:
+    nonplayer_line = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
+        r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): (.+)$"
+    )
+    adminplayer_line = re.compile(
+        r"from '([^']*)', entity id '([^']*)', to '([^']*)'\): (.+?): (.+)$"
+    )
+    def clear_string(text):
+        text = re.sub(r'\[[0-9A-Fa-f]{6}\]', '', text)
+        text = text.replace('[-]', '')
+        return text
 
-        #print("Запускаю plink.exe")
-        start_plink.process = await asyncio.create_subprocess_exec(
-            "plink.exe", "-telnet", address[0], "-P", address[3], "-raw",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        print("Start plink.exe, read chat...")
-        start_plink.process.stdin.write((f"{password}\n").encode())
-        await start_plink.process.stdin.drain()
+    # Запускаем telnet-соединение и читаем в фоне, если не запущено
+    if not hasattr(start_plink, "task") or start_plink.task.done():
+        print("Watch Chat via telnet started")
+        async def telnet_reader():
+            try:
+                tn = telnetlib.Telnet(address[0], int(address[3]), timeout=10)
+                tn.write((password + "\n").encode('utf-8'))
+                # Очистка буфера (как в оригинале)
+                start = time.time()
+                while time.time() - start < 1:
+                    try:
+                        tn.read_very_eager()
+                    except:
+                        break
 
-        async def read_stdout():
-            while True:
-                line_bytes = await start_plink.process.stdout.readline()
-                if not line_bytes:
-                    break
-                line = line_bytes.decode('utf-8').rstrip()
+                while True:
+                    line_bytes = await asyncio.to_thread(tn.read_until, b"\n", 1)
+                    if not line_bytes:
+                        await asyncio.sleep(0.1)
+                        continue
+                    line = line_bytes.decode('utf-8').rstrip()
 
-                match = chat_line_re.match(line)
-                if not match:
-                    continue  # не чат-сообщение, пропускаем
+                    # Вызов функции из chat_handler.py
+                    if "INF Chat (" in line:
+                        chat_handler.handle_chat_line(tn, line)
 
-                content = {
-                    "from": match.group(1),
-                    "entityId": match.group(2),
-                    "to": match.group(3),
-                    "name": match.group(4),
-                    "text": match.group(5)
-                }
+                    content = {}
+                    match = chat_line.match(line)
+                    if match:
+                        content = {
+                            "from": match.group(1),
+                            "entityId": match.group(2),
+                            "to": match.group(3),
+                            "name": match.group(4),
+                            "text": match.group(5)
+                        }
+                        channel = content["to"]
+                        nick = content["name"]
+                        message = content["text"]
+                        if content.get("to", "").lower() == "global":
+                            send_to_discord(f"[{channel}] **{nick}**", message)
 
-                # Извлекаем данные для отправки в Discord
-                channel = match.group(3)  # to (канал)
-                nick = match.group(4)     # name (ник)
-                message = match.group(5)  # text (сообщение)
+                    elif (match := adminplayer_line.match(line)):
+                        content = {
+                            "from": match.group(1),
+                            "entityId": match.group(2),
+                            "to": match.group(3),
+                            "name": match.group(4),
+                            "text": match.group(5),
+                        }
+                        channel = content["to"]
+                        nick = clear_string(content["name"])
+                        message = clear_string(content["text"])
+                        if content.get("to", "").lower() == "global":
+                            send_to_discord(f"[{channel}] **{nick}**", message)
 
-                # Отправляем в Discord (предполагаем, что функция send_to_discord определена)
-                send_to_discord(f"[{channel}] **{nick}**", message)
+                    elif (match := nonplayer_line.match(line)):
+                        content = {
+                            "from": match.group(1),
+                            "entityId": match.group(2),
+                            "to": match.group(3),
+                            "name": None,
+                            "text": match.group(4)
+                        }
+                        nick = clear_string(content["from"])
+                        message = clear_string(content["text"])
+                        #print(f"Debug:{nick}> {message}")
+                        if nick.lower() == "-non-player-" and content.get("to", "").lower() == "global":
+                            parts = message.split(":", 1)
+                            if len(parts) == 2:
+                                send_to_discord(f"[{content["to"]}] **{parts[0].strip()}**", parts[1].strip())
+                            else:
+                                send_to_discord(f"[{content['to']}] **[Server]**", "{message.strip()}")
 
-                #print("Чат-сообщение:", content)
+            except Exception as e:
+                #print(f"Telnet connection error: {e}")
+                pass
 
-        async def read_stderr():
-            while True:
-                line_bytes = await start_plink.process.stderr.readline()
-                if not line_bytes:
-                    break
-                decoded_line = line_bytes.decode('utf-8').rstrip()
-                print(f"Ошибка plink: {decoded_line}")
-
-        asyncio.create_task(read_stdout())
-        asyncio.create_task(read_stderr())
-
-        await start_plink.process.wait()
-        print("Процесс plink.exe завершился.")
+        # start parralel telnet_reader
+        start_plink.task = asyncio.create_task(telnet_reader())
 
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}\nBot Shards: {bot.shard_count}')
     print('Invite bot link to discord (open in browser):\nhttps://discord.com/api/oauth2/authorize?client_id='+ str(bot.user.id) +'&permissions=8&scope=bot\n')
-    '''
-    for guild in bot.guilds:
-        # Синхронизация команд на каждой гильдии
-        commands = await bot.fetch_guild_commands(guild.id)
-        print(f'Fetched {len(commands)} commands from guild {guild.name} (ID: {guild.id}).')
-    '''
+
     try:
         await update_avatar_if_needed(bot, bot_name, bot_ava)
     except Exception as e:
         print(f'update_avatar ERROR >>: {e}')
     update_status.start()
-    watch_chatlog.start()
+    #watch_chatlog.start()
     watch_logs.start()
     start_plink.start()
     message_sender.start()
@@ -728,7 +762,11 @@ async def on_message(message):
         text = ''
         #print(f"global_name: {message.author.global_name} text: {text}")
         role_color = f"[{str(message.author.color).lstrip('#')}]" if message.author.color else ""
-        await send_annonce(f"{role_color}[Discord]{message.author.global_name}[-]", message.content)
+        try:
+            await send_annonce(f"{role_color}[Discord] {message.author.global_name}[-]", message.content)
+            await message.add_reaction('✅')
+        except Exception as e:
+            print(f'ERROR send_annonce>>: {e}')
 
 #template admin commands
 '''
@@ -1019,3 +1057,5 @@ except disnake.ConnectionClosed:
     print(' ConnectionClosed Discord API')
 except disnake.errors.PrivilegedIntentsRequired:
     print(' Privileged Intents Required\n See Privileged Gateway Intents https://discord.com/developers/applications/ \nscreenshot http://junger.zzux.com/webhook/guide/3.png')
+except KeyboardInterrupt:
+    print(' Stoping...')
