@@ -3,7 +3,7 @@
     SdtdServerKit - https://github.com/1249993110/7DaysToDie-ServerKit
 Enable in webapi in LSTY_Data\appsettings.json
 
-Enable Chat log in Mods\ServerTools_Config\ServerToolsConfig.xml
+Enable Chat log in Mods\ServerTools_Config\ServerToolsConfig.xml (no longer 2.0+, replacet via telnet method )
     ```<Tool Name="Chat_Logger" Enable="True" />```
 
 additional doc https://docs.7dtd.top/api-187267722
