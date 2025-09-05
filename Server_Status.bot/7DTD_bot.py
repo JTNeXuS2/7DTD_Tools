@@ -126,6 +126,7 @@ find_error = "NullReferenceException: Object reference not set to an instance of
 count = 0
 max_errors = 100 
 useonce = None
+day7 = None
 update_settings()
 
 
@@ -241,6 +242,8 @@ async def send_from_buffer_to_discord(nick, message):
     nick = nick.replace(r'\*\*', '**')
     message = message.replace(r'\*\*', '**')
     message = message.replace(r'\`\`\`', '```')
+    nick = nick.replace(r'\>', '>')
+    message = message.replace(r'\>', '>')
     message = truncate_message(message)
     message = f"{nick}: {message}"
     data = {"content": message}
@@ -295,18 +298,24 @@ async def send_annonce(author, message):
 
     try:
         conn.request("POST", "/api/Server/SendGlobalMessage", payload, headers)
-    
         res = conn.getresponse()
+        response_data = res.read().decode("utf-8")
         if res.status == 200:
-            response_data = res.read().decode("utf-8")
             # print(response_data)
             retry_attempted = False
         else:
-            response_data = res.read().decode("utf-8")
-            print("Ошибка соединения:", res.status, response_data)
-            if not retry_attempted:  
+            print("Ошибка send_annonce. Ответ соединения:", res.status)
+            if not retry_attempted:
+                await asyncio.sleep(2)
+                if conn:
+                    conn.close()
+                    conn = None
+                access_token = None
+                refresh_token = None
                 retry_attempted = True
                 await send_annonce(author, message)
+            else:
+                print("Ошибка send_annonce. Повторная отправка не удалась. Ответ соединения:", res.status, response_data)
                 
     except Exception as e:
         print(f"Ошибка отправки сообщения: {e}")
@@ -492,7 +501,7 @@ async def watch_logs():
 
 @tasks.loop(seconds=int(update_time))
 async def update_status():
-    global conn, access_token, refresh_token
+    global conn, access_token, refresh_token, day7
     data_list = None
     data_list2 = None
 
@@ -541,6 +550,7 @@ async def update_status():
                 await bot.change_presence(status=disnake.Status.online, activity=activity)
 
         async def upd_msg():
+            global day7
             update_settings()
             if data_list:
                 uptime_seconds = int(data_list.get("uptime", 0))
@@ -560,6 +570,7 @@ async def update_status():
             except:
                 days_until = f"∞"
             try:
+                day7 = f"{'NOW :red_circle:' if moon_now else f'{days_until} Day :full_moon:'}"
                 add_code_string = eval(f'f"""{add_string}"""')
                 message = (
                     f":green_circle: Online:                        **{online_players}/{max_players}**\n"
@@ -572,7 +583,7 @@ async def update_status():
                     f"============ Server Settings ============\n"
                     f":date: Game Time:                             **{game_days}d :timer: {game_hours:02}h:{game_minutes:02}m**\n"
                     f":waxing_crescent_moon: Moon Cycle:            **{cycle_length}**\n"
-                    f":first_quarter_moon: Blood Moon:              **{'NOW :red_circle:' if moon_now else f'{days_until} Day :full_moon:'}**\n"
+                    f":first_quarter_moon: Blood Moon:              **{day7}**\n"
                     f":traffic_light: Difficulty:                   **{data_list.get("gameDifficulty", 0)}**\n"
                 )
             except Exception as e:
@@ -676,9 +687,21 @@ async def start_plink():
                         continue
                     line = line_bytes.decode('utf-8').rstrip()
 
-                    # Вызов функции из chat_handler.py
+                    # Вызов функции из chat_handler.py (чат команды)
                     if "INF Chat (" in line:
-                        chat_handler.handle_chat_line(tn, line)
+                        await chat_handler.handle_chat_line(tn, line)
+
+                    # Вызов функции из chat_handler.py (чат команды)
+                    if "INF Client" in line:
+                        command_pattern = re.compile(r"Client\s+(\S+?)/(\S+?)\s+executing client side command:\s+(.*)$")
+                        match = command_pattern.search(line)
+                        if match:
+                            id_ = match.group(1)
+                            nick = match.group(2)
+                            command = match.group(3)
+                            print(f"id: {id_}, nick: {nick}, command: {command}")
+
+                            send_to_discord(f"**WARN**\n[Console] **{nick}**", command)
 
                     content = {}
                     match = chat_line.match(line)
@@ -726,7 +749,7 @@ async def start_plink():
                             if len(parts) == 2:
                                 send_to_discord(f"[{content["to"]}] **{parts[0].strip()}**", parts[1].strip())
                             else:
-                                send_to_discord(f"[{content['to']}] **[Server]**", "{message.strip()}")
+                                send_to_discord(f"[{content['to']}] **[Server]**", f"{message.strip()}")
 
             except Exception as e:
                 #print(f"Telnet connection error: {e}")
