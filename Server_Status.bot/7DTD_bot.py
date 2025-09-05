@@ -691,7 +691,7 @@ async def start_plink():
                     if "INF Chat (" in line:
                         await chat_handler.handle_chat_line(tn, line)
 
-                    # Вызов функции из chat_handler.py (чат команды)
+                    # Проверим на клиента на чит-консольные команды
                     if "INF Client" in line:
                         command_pattern = re.compile(r"Client\s+(\S+?)/(\S+?)\s+executing client side command:\s+(.*)$")
                         match = command_pattern.search(line)
@@ -700,7 +700,6 @@ async def start_plink():
                             nick = match.group(2)
                             command = match.group(3)
                             print(f"id: {id_}, nick: {nick}, command: {command}")
-
                             send_to_discord(f"**WARN**\n[Console] **{nick}**", command)
 
                     content = {}
