@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+import sys
 
 db_file = "player_data.json"
 
@@ -76,7 +77,7 @@ def get_vehicle_list(tn, entity_id):
     else:
         return None
 
-def handle_chat_line(tn, line):
+async def handle_chat_line(tn, line):
 
     match = re.search(r"Chat \(from 'Steam_(\d+)', entity id '(\d+)', to 'Global'\): '([^']+)':\s*(/[\w]+)", line)
     if not match:
@@ -155,6 +156,21 @@ def handle_chat_line(tn, line):
         time.sleep(1)
         send_to_server(tn, f'pm {entity_id} "[ADFF2F]: Command Complete"')
 
+    elif command == "/7day":
+        day7 = re.sub(r':red_circle:|:full_moon:', '', sys.modules['__main__'].__dict__.get('day7', '∞'))
+        time.sleep(1)
+        send_to_server(tn, f'pm {entity_id} "[ADFF2F]: [FF0000]Blood Moon HORDE -[ADFF2F] {day7}"')
+
+    elif command.startswith("/admin"):
+        admin_role_id = "952310002528432178"
+        admin_message = command[len("/admin"):].strip()
+        send_func = sys.modules['__main__'].__dict__.get('send_from_buffer_to_discord')
+        if send_func:
+            await send_func(f"Call <@&{admin_role_id}> Player: **{name}**", f"ID: {steam_id}")
+        else:
+            print("Функция send_from_buffer_to_discord не найдена в главном модуле")
+        send_to_server(tn, f'pm {entity_id} "[ADFF2F]: Command Complete"')
+
     elif command == "/resetstats":
         send_to_server(tn, f'st-spk {entity_id} 0')
         send_to_server(tn, f'st-szk {entity_id} 0')
@@ -171,5 +187,37 @@ def handle_chat_line(tn, line):
         else:
             send_to_server(tn, f'pm {entity_id} "[ADFF2F]: Vehicles not found"')
 
+    '''
+    if command == "/setbase":
+        loc = get_player_location(tn, steam_id)
+        if loc:
+            player["base"] = loc
+            send_to_server(tn, f"say \"Base set at XYZ: {loc['x']:.1f}, {loc['y']:.1f}, {loc['z']:.1f}\"")
+        else:
+            send_to_server(tn, f"say \"Failed to get your current location to set base.\"")
+
+    elif command == "/base":
+        if "base" in player:
+            current_loc = get_player_location(tn, steam_id)
+            if current_loc:
+                player["return"] = current_loc  # Save location before teleporting
+                base_loc = player["base"]
+                send_to_server(tn, f"say \"Teleporting to base at XYZ: {base_loc['x']:.1f}, {base_loc['y']:.1f}, {base_loc['z']:.1f}\"")
+                send_to_server(tn, f"teleportplayer {player['entity_id']} {int(base_loc['x'])} {int(base_loc['y'])} {int(base_loc['z'])}")
+            else:
+                send_to_server(tn, "say \"Could not retrieve your current location before teleporting.\"")
+        else:
+            send_to_server(tn, "say \"No base set. Use /setbase first.\"")
+
+    elif command == "/return":
+        if "return" in player:
+            ret_loc = player.pop("return")  # Remove it after use
+            send_to_server(tn, f"say \"Returning to X: {ret_loc['x']:.1f}, Y: {ret_loc['y']:.1f}, Z: {ret_loc['z']:.1f}\"")
+            send_to_server(tn, f"teleportplayer {player['entity_id']} {int(ret_loc['x'])} {int(ret_loc['y'])} {int(ret_loc['z'])}")
+        else:
+            send_to_server(tn, "say \"No return location saved. Use /base first.\"")
+    '''
+
+    # Always save data at the end
     data[steam_id] = player
     save_data(data)
