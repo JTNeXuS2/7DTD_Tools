@@ -688,8 +688,11 @@ async def start_plink():
                     line = line_bytes.decode('utf-8').rstrip()
 
                     # Вызов функции из chat_handler.py (чат команды)
-                    if "INF Chat (" in line:
-                        await chat_handler.handle_chat_line(tn, line)
+                    try:
+                        if "INF Chat" in line:
+                            await chat_handler.handle_chat_line(tn, line)
+                    except Exception as e:
+                        print(f"INF Chat error: {e}")
 
                     # Проверим на клиента на чит-консольные команды
                     if "INF Client" in line:
