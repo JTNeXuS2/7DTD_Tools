@@ -1,5 +1,6 @@
 StatusBot
-![Uploading image.png…]()
+<img width="533" height="706" alt="image" src="https://github.com/user-attachments/assets/14d04dbd-3c8d-48ac-b6f3-0237420ae09c" />
+
 
 ### request Mods
     Server Tools - https://bitbucket.org/obsessive-coder/sevendaystodie-servertools/downloads/
