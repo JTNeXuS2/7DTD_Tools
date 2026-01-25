@@ -1,3 +1,6 @@
+StatusBot
+![Uploading image.png…]()
+
 ### request Mods
     Server Tools - https://bitbucket.org/obsessive-coder/sevendaystodie-servertools/downloads/
     SdtdServerKit - https://github.com/1249993110/7DaysToDie-ServerKit
