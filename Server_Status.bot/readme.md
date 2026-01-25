@@ -5,6 +5,7 @@
 ### request Mods
     Server Tools - https://bitbucket.org/obsessive-coder/sevendaystodie-servertools/downloads/
     SdtdServerKit - https://github.com/1249993110/7DaysToDie-ServerKit
+    PrismaCore (CSMM) - https://docs.csmm.app/en/PrismaCore/
 Enable in webapi in LSTY_Data\appsettings.json
 
 Enable Chat log in Mods\ServerTools_Config\ServerToolsConfig.xml (no longer 2.0+, replacet via telnet method )
