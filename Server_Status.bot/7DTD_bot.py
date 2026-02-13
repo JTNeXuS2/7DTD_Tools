@@ -62,7 +62,7 @@ async def write_cfg(section, key, value):
     with open('config.ini', 'w', encoding='utf-8') as configfile:
         config.write(configfile)
 def update_settings():
-    global token, channel_id, crosschat_id, message_id, update_time, bot_name, bot_ava, address, user_role_ids, command_prefex, username, password, log_dir, chatlog_dir, webhook_url, add_string, players_message_id
+    global token, channel_id, crosschat_id, message_id, update_time, bot_name, bot_ava, address, user_role_ids, command_prefex, username, password, log_dir, chatlog_dir, webhook_url, webhook_url2, add_string, players_message_id
 
     config = read_cfg()
     if config:
@@ -82,6 +82,7 @@ def update_settings():
             log_dir = config['botconfig'].get('log_dir', None)
             chatlog_dir = config['botconfig'].get('chatlog_dir', None)
             webhook_url = config['botconfig'].get('webhook_url', None)
+            webhook_url2 = config['botconfig'].get('webhook_url2', None)
             add_string = config['botconfig'].get('add_string', "")
 
             user_role_ids = config['botconfig'].get('user_role_ids', None)
@@ -120,7 +121,7 @@ user_role_ids = []
 chatlog_dir = None
 current_file2 = None
 file2_position = 0
-webhook_url2 = "https://discord.com/api/webhooks/1350263539427835914/DXbJhJsJEHPrlKkpBrtalZKMNXzwlbjYr2mNFg6HDBFK62mMbUfLAx5HtNbAmUZoMKjM"
+webhook_url2 = None
 find_error = "NullReferenceException: Object reference not set to an instance of an object"
 
 count = 0
@@ -649,17 +650,21 @@ async def update_status():
 
 @tasks.loop(seconds=10)
 async def start_plink():
+    #chat_line = re.compile(
+    #    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
+    #    r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): '([^']+)': (.+)$"
+    #)
     chat_line = re.compile(
         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
-        r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): '([^']+)': (.+)$"
+        r"(?:handled by mod '[^']+'[:]\s+)?"
+        r"Chat \(from '([^']+)', entity id '([^']+)', to '([^']+)'\): '([^']+)': (.+)$"
     )
     nonplayer_line = re.compile(
         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} \d+\.\d+ INF Chat "
         r"\(from '([^']+)', entity id '([^']+)', to '([^']+)'\): (.+)$"
     )
-    adminplayer_line = re.compile(
-        r"from '([^']*)', entity id '([^']*)', to '([^']*)'\): (.+?): (.+)$"
-    )
+    adminplayer_line = re.compile(r"from '([^']*)', entity id '([^']*)', to '([^']*)'\): (.+?): (.+)$")
+
     def clear_string(text):
         text = re.sub(r'\[[0-9A-Fa-f]{6}\]', '', text)
         text = text.replace('[-]', '')
@@ -672,7 +677,7 @@ async def start_plink():
             try:
                 tn = telnetlib.Telnet(address[0], int(address[3]), timeout=10)
                 tn.write((password + "\n").encode('utf-8'))
-                # Очистка буфера (как в оригинале)
+                # Очистка буфера
                 start = time.time()
                 while time.time() - start < 1:
                     try:
@@ -694,7 +699,7 @@ async def start_plink():
                     except Exception as e:
                         print(f"INF Chat error: {e}")
 
-                    # Проверим на клиента на чит-консольные команды
+                    # Проверим клиента на чит-консольные команды
                     if "INF Client" in line:
                         command_pattern = re.compile(r"Client\s+(\S+?)/(\S+?)\s+executing client side command:\s+(.*)$")
                         match = command_pattern.search(line)
@@ -703,8 +708,25 @@ async def start_plink():
                             nick = match.group(2)
                             command = match.group(3)
                             print(f"id: {id_}, nick: {nick}, command: {command}")
-                            send_to_discord(f"**WARN**\n[Console] **{nick}**", command)
+                            send_to_discord(f"**WARN**\n[Console] **{nick}**", f"```{command}```")
 
+                    # Проверим клиента на чит, нужен лог CSMM_Patrons
+                    if "[CSMM_Patrons]Unauthorized" in line:
+                        command_pattern = re.compile(r"\[CSMM_Patrons\]Unauthorized (\w+) detected on (.+?) \((\w+)\)")
+                        match = command_pattern.search(line)
+                        if match:
+                            command = match.group(1)  # Например, "SpectatorMode" или "GodMode"
+                            nick = match.group(2)     # Например, "Maloy"
+                            id_ = match.group(3)      # Например, "Steam_76561198785309432"
+                            print(f"id: {id_}, nick: {nick}, command: {command}")
+                            await auth(address)
+                            res = await send_api_command(f'ban add {id_} 10 years "Nice hack mate" "{nick}"')
+                            if res.status == 200:
+                                print(f"Banned! id: {id_}, nick: {nick}")
+                                send_to_discord(f"**WARN**\n[Cheater] **{id_}** Nick: {nick}", f"```{command}```")
+                                await send_annonce(f"Cheat Warn!!! {nick}", f"id {id_}")
+
+                    # Цветоной ник
                     content = {}
                     match = chat_line.match(line)
                     if match:
@@ -754,9 +776,8 @@ async def start_plink():
                                 send_to_discord(f"[{content['to']}] **[Server]**", f"{message.strip()}")
 
             except Exception as e:
-                #print(f"Telnet connection error: {e}")
-                pass
-
+                print(f"Telnet connection error: {e}")
+                #pass
         # start parralel telnet_reader
         start_plink.task = asyncio.create_task(telnet_reader())
 
